@@ -1066,6 +1066,11 @@
                     Mot de passe incorrect. Veuillez réessayer.
                 </div>
             </form>
+            <!-- Console de débogage pour iOS -->
+            <div id="debug-console" style="margin-top: 20px; padding: 10px; background: rgba(0,0,0,0.5); border-radius: 8px; max-height: 150px; overflow-y: auto; font-size: 11px; font-family: monospace; color: #0f0; display: none;">
+                <div style="color: #fff; font-weight: bold; margin-bottom: 5px;">Console de débogage iOS:</div>
+                <div id="debug-messages"></div>
+            </div>
         </div>
     </div>
 
@@ -1267,6 +1272,54 @@
                 isUnlocked: false,
                 isUnlocking: false  // Flag anti-soumissions multiples
             };
+            
+            // Console de débogage pour iOS
+            const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (isIOS) {
+                $('#debug-console').show();
+            }
+            
+            function debugLog(message) {
+                console.log(message);
+                if (isIOS) {
+                    const timestamp = new Date().toLocaleTimeString();
+                    const $messages = $('#debug-messages');
+                    $messages.append(`<div style="color: #0f0;">[${timestamp}] ${message}</div>`);
+                    // Auto-scroll
+                    const container = document.getElementById('debug-console');
+                    if (container) {
+                        container.scrollTop = container.scrollHeight;
+                    }
+                }
+            }
+            
+            function debugError(message, error) {
+                console.error(message, error);
+                if (isIOS) {
+                    const timestamp = new Date().toLocaleTimeString();
+                    const $messages = $('#debug-messages');
+                    $messages.append(`<div style="color: #f00;">[${timestamp}] ERROR: ${message}</div>`);
+                    if (error) {
+                        $messages.append(`<div style="color: #f88; margin-left: 10px;">${error.message || error}</div>`);
+                    }
+                    // Auto-scroll
+                    const container = document.getElementById('debug-console');
+                    if (container) {
+                        container.scrollTop = container.scrollHeight;
+                    }
+                }
+            }
+            
+            // Capturer les erreurs globales sur iOS
+            if (isIOS) {
+                window.addEventListener('error', function(e) {
+                    debugError('Global error', e.error || e.message);
+                });
+                
+                window.addEventListener('unhandledrejection', function(e) {
+                    debugError('Unhandled promise rejection', e.reason);
+                });
+            }
 
             // Initialize password system
             initializePasswordSystem();
@@ -1289,13 +1342,16 @@
                 $('#password-form').on('submit', async function(e) {
                     e.preventDefault();
                     
+                    debugLog('Form submitted, iOS: ' + isIOS);
+                    
                     // Vérifier si un déverrouillage est déjà en cours
                     if (app.isUnlocking) {
-                        console.log('Déverrouillage déjà en cours, ignorer la soumission');
+                        debugLog('Déverrouillage déjà en cours, ignorer la soumission');
                         return false;
                     }
                     
                     const password = $('#password-input').val().trim();
+                    debugLog('Password length: ' + password.length);
                     
                     if (!password) {
                         showPasswordError('Veuillez saisir un mot de passe.');
@@ -1304,12 +1360,18 @@
                     
                     // Marquer le déverrouillage comme en cours
                     app.isUnlocking = true;
+                    debugLog('Starting unlock attempt');
                     
                     try {
                         await attemptUnlock(password);
+                    } catch(error) {
+                        debugError('Unlock error', error);
+                        // S'assurer que l'erreur est bien gérée
+                        throw error;
                     } finally {
                         // Toujours réinitialiser le flag, même en cas d'erreur
                         app.isUnlocking = false;
+                        debugLog('Unlock flag reset');
                     }
                     
                     return false; // Empêcher toute soumission par défaut
@@ -1322,6 +1384,7 @@
             }
 
             async function attemptUnlock(password) {
+                debugLog('attemptUnlock called');
                 const $unlockBtn = $('#unlock-btn');
                 const $passwordInput = $('#password-input');
                 
@@ -1329,10 +1392,13 @@
                 $unlockBtn.addClass('loading').prop('disabled', true);
                 $unlockBtn.html('<i class="fas fa-unlock"></i> Déverrouillage...');
                 $passwordInput.prop('disabled', true);
+                debugLog('UI state set to loading');
                 
                 try {
                     // Load and decrypt the genome file
+                    debugLog('Calling loadAndDecryptGenome');
                     const success = await loadAndDecryptGenome(password);
+                    debugLog('loadAndDecryptGenome returned: ' + success);
                     
                     if (success) {
                         // Marquer comme déverrouillé AVANT de masquer le modal
@@ -1350,11 +1416,20 @@
                     }
                     
                 } catch (error) {
-                    console.error('Erreur de déverrouillage:', error);
-                    showPasswordError('Mot de passe incorrect ou erreur de déverrouillage.');
+                    debugError('Error in attemptUnlock', error);
+                    if (error.stack) debugLog('Stack: ' + error.stack);
+                    
+                    // Message d'erreur spécifique pour iOS si problème de mémoire
+                    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+                    let errorMessage = 'Mot de passe incorrect ou erreur de déverrouillage.';
+                    
+                    if (isIOS && (error.message.includes('memory') || error.message.includes('ArrayBuffer') || error.message.includes('fetch'))) {
+                        errorMessage = 'Erreur de mémoire sur iOS. Essayez de fermer d\'autres onglets ou apps et réessayez.';
+                    }
+                    
+                    showPasswordError(errorMessage);
                     
                     // Reset form - sans focus automatique sur iOS
-                    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
                     $passwordInput.val('').prop('disabled', false);
                     if (!isIOS) {
                         $passwordInput.focus();
@@ -1366,6 +1441,8 @@
 
             async function loadAndDecryptGenome(password) {
                 try {
+                    debugLog('loadAndDecryptGenome started');
+                    
                     // Mode de test : essayer d'abord le fichier non crypté pour debug
                     if (password === 'TEST_DIRECT') {
                         updatePasswordProgress('Mode test : chargement direct du fichier gzip...');
@@ -1373,14 +1450,19 @@
                     }
                     
                     updatePasswordProgress('Téléchargement du fichier crypté...');
+                    debugLog('Starting fetch for encrypted file');
                     
                     // Load the encrypted file
                     const response = await fetch('gen.js.gz.secure.enc');
+                    debugLog('Fetch response status: ' + response.status);
+                    
                     if (!response.ok) {
                         throw new Error(`Erreur HTTP: ${response.status}`);
                     }
                     
+                    debugLog('Converting to ArrayBuffer');
                     const encryptedData = await response.arrayBuffer();
+                    debugLog('ArrayBuffer size: ' + encryptedData.byteLength + ' bytes');
                     updatePasswordProgress('Fichier téléchargé, décryptage en cours...');
                     
                     updatePasswordProgress('Utilisation du format compatible CryptoJS...');
