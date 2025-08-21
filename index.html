@@ -1439,6 +1439,22 @@
                 }
             }
 
+            // Fonction helper pour convertir Blob en ArrayBuffer sur iOS
+            async function blobToArrayBuffer(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        if (reader.result) {
+                            resolve(reader.result);
+                        } else {
+                            reject(new Error('Failed to read blob'));
+                        }
+                    };
+                    reader.onerror = reject;
+                    reader.readAsArrayBuffer(blob);
+                });
+            }
+            
             async function loadAndDecryptGenome(password) {
                 try {
                     debugLog('loadAndDecryptGenome started');
@@ -1460,9 +1476,70 @@
                         throw new Error(`Erreur HTTP: ${response.status}`);
                     }
                     
-                    debugLog('Converting to ArrayBuffer');
-                    const encryptedData = await response.arrayBuffer();
-                    debugLog('ArrayBuffer size: ' + encryptedData.byteLength + ' bytes');
+                    // Vérifier la taille du fichier
+                    const contentLength = response.headers.get('content-length');
+                    if (contentLength) {
+                        debugLog('File size: ' + (parseInt(contentLength) / 1024 / 1024).toFixed(2) + ' MB');
+                    }
+                    
+                    let encryptedData;
+                    
+                    // Sur iOS, utiliser une méthode alternative pour les gros fichiers
+                    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+                    
+                    if (isIOS) { // Toujours utiliser la méthode Blob sur iOS
+                        debugLog('iOS detected with large file, using chunked reading...');
+                        
+                        try {
+                            // Méthode 1: Essayer avec Blob d'abord (plus efficace en mémoire)
+                            debugLog('Trying Blob method...');
+                            const blob = await response.blob();
+                            debugLog('Blob size: ' + blob.size + ' bytes');
+                            
+                            // Convertir le Blob en ArrayBuffer par chunks
+                            encryptedData = await blobToArrayBuffer(blob);
+                            debugLog('Conversion to ArrayBuffer successful');
+                            
+                        } catch (blobError) {
+                            debugError('Blob method failed', blobError);
+                            
+                            // Méthode 2: Lire le stream par chunks
+                            debugLog('Trying stream reader method...');
+                            const reader = response.body.getReader();
+                            const chunks = [];
+                            let totalSize = 0;
+                            
+                            while (true) {
+                                const { done, value } = await reader.read();
+                                if (done) break;
+                                
+                                chunks.push(value);
+                                totalSize += value.length;
+                                
+                                if (totalSize % (1024 * 1024) === 0) { // Log chaque MB
+                                    debugLog('Read ' + (totalSize / 1024 / 1024).toFixed(1) + ' MB...');
+                                }
+                            }
+                            
+                            debugLog('Total chunks read: ' + chunks.length);
+                            debugLog('Total size: ' + totalSize + ' bytes');
+                            
+                            // Combiner les chunks
+                            encryptedData = new Uint8Array(totalSize);
+                            let offset = 0;
+                            for (const chunk of chunks) {
+                                encryptedData.set(chunk, offset);
+                                offset += chunk.length;
+                            }
+                            
+                            debugLog('Chunks combined into ArrayBuffer');
+                        }
+                    } else {
+                        // Méthode standard pour desktop ou petits fichiers
+                        debugLog('Converting to ArrayBuffer (standard method)');
+                        encryptedData = await response.arrayBuffer();
+                        debugLog('ArrayBuffer size: ' + encryptedData.byteLength + ' bytes');
+                    }
                     updatePasswordProgress('Fichier téléchargé, décryptage en cours...');
                     
                     updatePasswordProgress('Utilisation du format compatible CryptoJS...');
