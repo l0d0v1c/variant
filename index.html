@@ -1053,7 +1053,10 @@
                        id="password-input" 
                        class="password-input" 
                        placeholder="Entrez le mot de passe..."
-                       autocomplete="off"
+                       autocomplete="current-password"
+                       autocorrect="off"
+                       autocapitalize="off"
+                       spellcheck="false"
                        required>
                 <button type="submit" class="password-unlock-btn" id="unlock-btn">
                     <i class="fas fa-unlock"></i> Déverrouiller
@@ -1261,38 +1264,83 @@
                 currentResults: [],
                 isLoading: false,
                 genData: null,
-                isUnlocked: false
+                isUnlocked: false,
+                isUnlocking: false  // Flag anti-soumissions multiples
             };
 
             // Initialize password system
             initializePasswordSystem();
 
             async function initializePasswordSystem() {
-                // Focus on password input
-                $('#password-input').focus();
+                // Détecter iOS
+                const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+                
+                // Focus on password input avec délai sur iOS pour éviter les problèmes
+                if (!isIOS) {
+                    $('#password-input').focus();
+                } else {
+                    // Sur iOS, retarder le focus pour éviter les problèmes avec le clavier virtuel
+                    setTimeout(() => {
+                        $('#password-input').focus();
+                    }, 500);
+                }
                 
                 // Handle password form submission
                 $('#password-form').on('submit', async function(e) {
                     e.preventDefault();
+                    e.stopPropagation(); // Empêcher la propagation de l'événement
+                    
+                    // Vérifier si un déverrouillage est déjà en cours
+                    if (app.isUnlocking) {
+                        console.log('Déverrouillage déjà en cours, ignorer la soumission');
+                        return false;
+                    }
+                    
                     const password = $('#password-input').val().trim();
                     
                     if (!password) {
                         showPasswordError('Veuillez saisir un mot de passe.');
-                        return;
+                        return false;
                     }
                     
-                    await attemptUnlock(password);
+                    // Marquer le déverrouillage comme en cours
+                    app.isUnlocking = true;
+                    
+                    try {
+                        await attemptUnlock(password);
+                    } finally {
+                        // Toujours réinitialiser le flag, même en cas d'erreur
+                        app.isUnlocking = false;
+                    }
+                    
+                    return false; // Empêcher toute soumission par défaut
                 });
                 
                 // Auto-clear error on input
                 $('#password-input').on('input', function() {
                     hidePasswordError();
                 });
+                
+                // Empêcher le double-tap sur iOS
+                if (isIOS) {
+                    $('#unlock-btn').on('touchend', function(e) {
+                        e.preventDefault();
+                        if (!app.isUnlocking) {
+                            $(this).trigger('click');
+                        }
+                    });
+                }
             }
 
             async function attemptUnlock(password) {
                 const $unlockBtn = $('#unlock-btn');
                 const $passwordInput = $('#password-input');
+                
+                // Vérification supplémentaire du flag
+                if (app.isUnlocking) {
+                    console.warn('attemptUnlock appelé alors qu\'un déverrouillage est déjà en cours');
+                    return;
+                }
                 
                 // Set loading state
                 $unlockBtn.addClass('loading').prop('disabled', true);
@@ -1304,13 +1352,15 @@
                     const success = await loadAndDecryptGenome(password);
                     
                     if (success) {
+                        // Marquer comme déverrouillé AVANT de masquer le modal
+                        app.isUnlocked = true;
+                        
                         // Hide password modal with animation
                         $('#password-overlay').fadeOut(500, function() {
                             $(this).remove();
                         });
                         
                         // Initialize the main application
-                        app.isUnlocked = true;
                         initializeApp();
                     } else {
                         throw new Error('Décryptage échoué');
@@ -1320,8 +1370,12 @@
                     console.error('Erreur de déverrouillage:', error);
                     showPasswordError('Mot de passe incorrect ou erreur de déverrouillage.');
                     
-                    // Reset form
-                    $passwordInput.val('').prop('disabled', false).focus();
+                    // Reset form - sans focus automatique sur iOS
+                    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+                    $passwordInput.val('').prop('disabled', false);
+                    if (!isIOS) {
+                        $passwordInput.focus();
+                    }
                     $unlockBtn.removeClass('loading').prop('disabled', false);
                     $unlockBtn.html('<i class="fas fa-unlock"></i> Déverrouiller');
                 }
